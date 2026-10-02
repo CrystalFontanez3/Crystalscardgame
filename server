@@ -1,2 +1,83 @@
 server.js
 package.json
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
+
+const rooms = {};
+
+function createDeck() {
+  const suits = ["♠", "♥", "♦", "♣"];
+  const ranks = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+  const deck = [];
+  for (const s of suits) {
+    for (const r of ranks) {
+      deck.push({ suit: s, rank: r });
+    }
+  }
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
+}
+
+io.on("connection", (socket) => {
+  socket.on("joinGame", ({ roomId, name }) => {
+    if (!rooms[roomId]) {
+      rooms[roomId] = {
+        players: {},
+        deck: [],
+        discardPile: [],
+        currentTurn: null,
+        status: "waiting"
+      };
+    }
+
+    const room = rooms[roomId];
+    room.players[socket.id] = { hand: [], name };
+    socket.join(roomId);
+
+    if (Object.keys(room.players).length >= 2 && room.status === "waiting") {
+      room.deck = createDeck();
+      for (const playerId of Object.keys(room.players)) {
+        room.players[playerId].hand = room.deck.splice(0, 5);
+      }
+      room.currentTurn = Object.keys(room.players)[0];
+      room.status = "playing";
+    }
+
+    io.to(roomId).emit("stateUpdate", room);
+  });
+
+  socket.on("playCard", ({ roomId, cardIndex }) => {
+    const room = rooms[roomId];
+    if (!room || room.currentTurn !== socket.id) return;
+
+    const player = room.players[socket.id];
+    const [card] = player.hand.splice(cardIndex, 1);
+    room.discardPile.push(card);
+
+    const ids = Object.keys(room.players);
+    const idx = ids.indexOf(socket.id);
+    room.currentTurn = ids[(idx + 1) % ids.length];
+
+    io.to(roomId).emit("stateUpdate", room);
+  });
+
+  socket.on("disconnect", () => {
+    for (const roomId in rooms) {
+      const room = rooms[roomId];
+      if (room.players[socket.id]) {
+        delete room.players[socket.id];
+        io.to(roomId).emit("stateUpdate", room);
+      }
+    }
+  });
+});
+
+server.listen(3000, () => console.log("Server running on 3000"));
